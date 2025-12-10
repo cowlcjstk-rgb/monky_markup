@@ -23,11 +23,11 @@ HEADERS = {
 def init_google_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     try:
-        # [수정됨] 1순위: Streamlit Cloud Secrets에서 키 가져오기
+        # 1순위: Streamlit Cloud Secrets
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        # 2순위: 로컬 파일(secrets.json)에서 가져오기 (내 컴퓨터용)
+        # 2순위: 로컬 파일
         else:
             creds = ServiceAccountCredentials.from_json_keyfile_name("secrets.json", scope)
             
@@ -37,7 +37,7 @@ def init_google_sheet():
             sheet.append_row(["product_id", "supplier", "product_name", "data_json", "updated_at"])
         return sheet
     except Exception as e:
-        st.error(f"구글 시트 연결 실패. (Secrets 설정을 확인하세요): {e}")
+        st.error(f"구글 시트 연결 실패: {e}")
         return None
 
 def save_product_to_sheet(sheet, pid, supplier, p_name, data_json):
@@ -190,9 +190,8 @@ def process_html_to_dataframe(html_content):
 
 # --- 메인 프로그램 ---
 def main():
-    st.set_page_config(page_title="여행 상품 마크업 (Web)", layout="wide")
+    st.set_page_config(page_title="스파 상품 마크업 (Web)", layout="wide")
     
-    # 구글 시트 연결 시도
     sheet = init_google_sheet()
     if sheet is None: st.stop()
 
@@ -203,20 +202,21 @@ def main():
             return f'color: {color}; font-weight: bold;'
         return f'color: {color}'
 
-    st.title("✈️ 여행 상품 마크업 (Web Ver.)")
+    st.title("✈️ 스파 상품 마크업 계산기")
 
+    # --- 사이드바 ---
     with st.sidebar:
         st.header("1. 연결 설정")
         manual_cookie_str = st.text_area("쿠키 전체 텍스트", height=100)
         
-        # [수정] 세션 상태 초기화 방식 개선
         if 'cookie_saved' not in st.session_state:
             st.session_state['cookie_saved'] = False
 
         if st.button("설정 저장"):
             st.session_state['manual_cookie_str'] = manual_cookie_str
             st.session_state['cookie_saved'] = True
-            st.success("저장 완료! (새로고침 시 초기화될 수 있음)")
+            st.success("저장 완료!")
+            st.rerun() # 화면 갱신
 
         st.markdown("---")
         st.header("2. 데이터 업데이트")
@@ -271,49 +271,76 @@ def main():
             st.success("저장 완료!")
             st.rerun()
 
-    st.header("3. 상품 마크업 분석")
-    all_products = load_products_from_sheet(sheet)
-
-    if not all_products.empty:
-        all_products['display_label'] = all_products.apply(
-            lambda x: f"[{x['product_id']}] {x['product_name']}", axis=1
-        )
+    # --- 메인 화면 로직 ---
+    # 쿠키가 아직 입력되지 않았다면 -> 사용 가이드 보여주기
+    if not st.session_state.get('cookie_saved'):
+        st.info("👈 왼쪽 사이드바에 **'쿠키(Cookie)'** 값을 입력해야 데이터를 가져올 수 있습니다.")
         
-        product_options = all_products['display_label'].unique().tolist()
-        selected_label = st.selectbox("분석할 상품을 선택하세요", product_options)
-        
-        if selected_label:
-            selected_id = selected_label.split(']')[0].replace('[', '')
-            row = all_products[all_products['product_id'] == str(selected_id)].iloc[0]
+        with st.expander("ℹ️ 쿠키 값 가져오는 방법 (필독)", expanded=True):
+            st.markdown("""
+            ### 1. 관리자 페이지 접속
+            크롬 브라우저로 [MonkeyTravel 관리자 페이지]에 접속하여 로그인합니다.
             
-            st.markdown(f"### 📦 {row['product_name']}")
-            st.caption(f"ID: {selected_id} | 업데이트: {row['updated_at']}")
+            ### 2. 개발자 도구 열기
+            키보드의 `F12` 키를 누릅니다.
             
-            raw_data = row.get('data_json', '[]')
-            try:
-                if isinstance(raw_data, str) and (raw_data.startswith('[') or raw_data.startswith('{')):
-                    final_df = pd.read_json(raw_data)
-                else:
-                    final_df = pd.DataFrame()
-            except: final_df = pd.DataFrame()
+            ### 3. 네트워크(Network) 탭 확인
+            1. 개발자 도구 상단 메뉴에서 `Network` 탭을 클릭합니다.
+            2. 키보드 `F5`를 눌러 페이지를 새로고침 합니다.
+            3. 목록 맨 위에 있는 파일(spaProductinfo.php)을 클릭합니다.
+            
+            ### 4. 쿠키 값 복사
+            1. 오른쪽 창에서 `Headers` 탭을 클릭합니다.
+            2. 스크롤을 내려 `Request Headers` 항목을 찾습니다.
+            3. 그 안에 있는 `Cookie:` 옆의 긴 텍스트(COOKIE_LANG=KR...)를 전부 복사합니다.
+            4. 복사한 값을 왼쪽 사이드바 '쿠키 전체 텍스트' 칸에 붙여넣고 [설정 저장]을 누릅니다.
+            st.warning(⚠️ 주의: 로그아웃 하면 쿠키 값이 바뀌므로, 다시 로그인했다면 쿠키도 새로 복사해야 합니다.)
 
-            if not final_df.empty:
-                display_df = final_df.copy()
-                cols_num = ['네트가', '세일가'] + [c for c in display_df.columns if '커미션' in c or '공급가' in c]
-                for c in cols_num:
-                    if c in display_df.columns:
-                        display_df[c] = display_df[c].apply(lambda x: f"{x:,}")
-
-                st.dataframe(
-                    display_df.style.map(highlight_deficit, subset=[c for c in display_df.columns if '마크업' in c]),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=600
-                )
-            else:
-                st.warning("유효한 가격 정보가 없습니다.")
+    # 쿠키가 입력되었다면 -> 분석 화면 보여주기
     else:
-        st.info("👈 왼쪽에서 데이터를 먼저 가져와주세요.")
+        st.header("상품 마크업 분석")
+        all_products = load_products_from_sheet(sheet)
+
+        if not all_products.empty:
+            all_products['display_label'] = all_products.apply(
+                lambda x: f"[{x['product_id']}] {x['product_name']}", axis=1
+            )
+            
+            product_options = all_products['display_label'].unique().tolist()
+            selected_label = st.selectbox("분석할 상품을 선택하세요", product_options)
+            
+            if selected_label:
+                selected_id = selected_label.split(']')[0].replace('[', '')
+                row = all_products[all_products['product_id'] == str(selected_id)].iloc[0]
+                
+                st.markdown(f"### 📦 {row['product_name']}")
+                st.caption(f"ID: {selected_id} | 업데이트: {row['updated_at']}")
+                
+                raw_data = row.get('data_json', '[]')
+                try:
+                    if isinstance(raw_data, str) and (raw_data.startswith('[') or raw_data.startswith('{')):
+                        final_df = pd.read_json(raw_data)
+                    else:
+                        final_df = pd.DataFrame()
+                except: final_df = pd.DataFrame()
+
+                if not final_df.empty:
+                    display_df = final_df.copy()
+                    cols_num = ['네트가', '세일가'] + [c for c in display_df.columns if '커미션' in c or '공급가' in c]
+                    for c in cols_num:
+                        if c in display_df.columns:
+                            display_df[c] = display_df[c].apply(lambda x: f"{x:,}")
+
+                    st.dataframe(
+                        display_df.style.map(highlight_deficit, subset=[c for c in display_df.columns if '마크업' in c]),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=600
+                    )
+                else:
+                    st.warning("유효한 가격 정보가 없습니다.")
+        else:
+            st.info("👈 왼쪽에서 데이터를 먼저 가져와주세요.")
 
 if __name__ == "__main__":
     main()
