@@ -188,7 +188,7 @@ def process_html_to_dataframe(html_content):
 
 # --- 메인 프로그램 ---
 def main():
-    st.set_page_config(page_title="스파 상품 마크업 (Web)", layout="wide")
+    st.set_page_config(page_title="스파 상품 마크업 계산기", layout="wide")
     
     sheet = init_google_sheet()
     if sheet is None: st.stop()
@@ -217,30 +217,12 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        
-        # [수정됨] 조건 없이 항상 보이는 바로가기 버튼
-        st.markdown("""
-            <a href="#analysis_section" style="text-decoration:none;">
-                <button style="
-                    width: 100%; 
-                    padding: 0.5rem; 
-                    border: 1px solid #FF4B4B; 
-                    border-radius: 5px; 
-                    background-color: transparent; 
-                    color: #FF4B4B; 
-                    font-weight: bold;
-                    cursor: pointer;">
-                    📊 상품 마크업 분석 바로가기
-                </button>
-            </a>
-            <br><br>
-        """, unsafe_allow_html=True)
+        # [수정] 바로가기 버튼 삭제됨
 
         st.header("2. 데이터 업데이트")
         product_ids_input = st.text_area("상품 ID 리스트", height=150)
         
         if st.button("데이터 가져오기"):
-            # 데이터 가져오기는 쿠키가 필수이므로 여기서만 체크
             if not st.session_state.get('cookie_saved') or not st.session_state.get('manual_cookie_str'):
                 st.error("데이터를 업데이트하려면 쿠키 입력이 필요합니다.")
             else:
@@ -290,12 +272,11 @@ def main():
 
     # --- 메인 화면 로직 ---
     
-    # 쿠키가 없으면 가이드 보여주기 (하지만 아래 분석 화면은 계속 나옴)
-    if not st.session_state.get('cookie_saved'):
-        with st.expander("ℹ️ (업데이트용) 쿠키 값 가져오는 방법 보기", expanded=False):
-            st.markdown("""
-            **데이터를 업데이트 하려면 쿠키가 필요합니다. 단순히 조회만 한다면 이 설정은 건너뛰셔도 됩니다.**
-            
+    # [수정] 가이드 항상 표시 (조건문 제거됨)
+    with st.expander("ℹ️ (업데이트용) 쿠키 값 가져오는 방법 보기", expanded=False):
+        st.markdown("""
+        **데이터를 업데이트 하려면 쿠키가 필요합니다. 단순히 조회만 한다면 이 설정은 건너뛰셔도 됩니다.**
+        
             ### 1. 관리자 페이지 접속
             크롬 브라우저로 [MonkeyTravel 관리자 페이지]에 접속하여 로그인합니다.
             
@@ -314,8 +295,8 @@ def main():
             4. 복사한 값을 왼쪽 사이드바 '쿠키 전체 텍스트' 칸에 붙여넣고 [설정 저장]을 누릅니다.
             """)
 
-    # [수정됨] 쿠키 여부와 상관없이 분석 화면은 항상 표시
-    st.header("상품 마크업 분석", anchor="analysis_section")
+    # 분석 화면 항상 표시
+    st.header("상품 마크업 분석")
     
     all_products = load_products_from_sheet(sheet)
 
@@ -329,34 +310,42 @@ def main():
         
         if selected_label:
             selected_id = selected_label.split(']')[0].replace('[', '')
-            row = all_products[all_products['product_id'] == str(selected_id)].iloc[0]
             
-            st.markdown(f"### 📦 {row['product_name']}")
-            st.caption(f"ID: {selected_id} | 업데이트: {row['updated_at']}")
+            # product_id를 문자열로 변환하여 안전하게 필터링
+            all_products['product_id'] = all_products['product_id'].astype(str)
+            filtered_rows = all_products[all_products['product_id'] == str(selected_id)]
             
-            raw_data = row.get('data_json', '[]')
-            try:
-                if isinstance(raw_data, str) and (raw_data.startswith('[') or raw_data.startswith('{')):
-                    final_df = pd.read_json(raw_data)
+            if not filtered_rows.empty:
+                row = filtered_rows.iloc[0]
+                
+                st.markdown(f"### 📦 {row['product_name']}")
+                st.caption(f"ID: {selected_id} | 업데이트: {row['updated_at']}")
+                
+                raw_data = row.get('data_json', '[]')
+                try:
+                    if isinstance(raw_data, str) and (raw_data.startswith('[') or raw_data.startswith('{')):
+                        final_df = pd.read_json(raw_data)
+                    else:
+                        final_df = pd.DataFrame()
+                except: final_df = pd.DataFrame()
+
+                if not final_df.empty:
+                    display_df = final_df.copy()
+                    cols_num = ['네트가', '세일가'] + [c for c in display_df.columns if '커미션' in c or '공급가' in c]
+                    for c in cols_num:
+                        if c in display_df.columns:
+                            display_df[c] = display_df[c].apply(lambda x: f"{x:,}")
+
+                    st.dataframe(
+                        display_df.style.map(highlight_deficit, subset=[c for c in display_df.columns if '마크업' in c]),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=600
+                    )
                 else:
-                    final_df = pd.DataFrame()
-            except: final_df = pd.DataFrame()
-
-            if not final_df.empty:
-                display_df = final_df.copy()
-                cols_num = ['네트가', '세일가'] + [c for c in display_df.columns if '커미션' in c or '공급가' in c]
-                for c in cols_num:
-                    if c in display_df.columns:
-                        display_df[c] = display_df[c].apply(lambda x: f"{x:,}")
-
-                st.dataframe(
-                    display_df.style.map(highlight_deficit, subset=[c for c in display_df.columns if '마크업' in c]),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=600
-                )
+                    st.warning("유효한 가격 정보가 없습니다.")
             else:
-                st.warning("유효한 가격 정보가 없습니다.")
+                st.error("데이터를 찾을 수 없습니다.")
     else:
         st.info("👈 아직 저장된 데이터가 없습니다. 왼쪽 사이드바에서 [데이터 가져오기]를 진행해주세요.")
 
