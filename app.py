@@ -13,25 +13,31 @@ import json
 LOGIN_URL = "https://www.monkeytravel.com/th/totosys/index.php" 
 BASE_PRODUCT_URL = "https://www.monkeytravel.com/th/totosys/product/spaProductRate.php?product_id={}"
 GOOGLE_SHEET_NAME = "travel_data" 
-JSON_KEY_FILE = "secrets.json"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# --- 구글 시트 연결 ---
+# --- 구글 시트 연결 (클라우드 호환) ---
 @st.cache_resource
 def init_google_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_KEY_FILE, scope)
+        # [수정됨] 1순위: Streamlit Cloud Secrets에서 키 가져오기
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        # 2순위: 로컬 파일(secrets.json)에서 가져오기 (내 컴퓨터용)
+        else:
+            creds = ServiceAccountCredentials.from_json_keyfile_name("secrets.json", scope)
+            
         client = gspread.authorize(creds)
         sheet = client.open(GOOGLE_SHEET_NAME).sheet1
         if not sheet.row_values(1):
             sheet.append_row(["product_id", "supplier", "product_name", "data_json", "updated_at"])
         return sheet
     except Exception as e:
-        st.error(f"구글 시트 연결 실패: {e}")
+        st.error(f"구글 시트 연결 실패. (Secrets 설정을 확인하세요): {e}")
         return None
 
 def save_product_to_sheet(sheet, pid, supplier, p_name, data_json):
@@ -184,8 +190,9 @@ def process_html_to_dataframe(html_content):
 
 # --- 메인 프로그램 ---
 def main():
-    st.set_page_config(page_title="여행 상품 마크업 (Auto Fix)", layout="wide")
+    st.set_page_config(page_title="여행 상품 마크업 (Web)", layout="wide")
     
+    # 구글 시트 연결 시도
     sheet = init_google_sheet()
     if sheet is None: st.stop()
 
@@ -196,42 +203,44 @@ def main():
             return f'color: {color}; font-weight: bold;'
         return f'color: {color}'
 
-    st.title("✈️ 여행 상품 마크업 (Google Sheet)")
+    st.title("✈️ 여행 상품 마크업 (Web Ver.)")
 
     with st.sidebar:
         st.header("1. 연결 설정")
         manual_cookie_str = st.text_area("쿠키 전체 텍스트", height=100)
+        
+        # [수정] 세션 상태 초기화 방식 개선
+        if 'cookie_saved' not in st.session_state:
+            st.session_state['cookie_saved'] = False
+
         if st.button("설정 저장"):
             st.session_state['manual_cookie_str'] = manual_cookie_str
-            st.success("저장 완료!")
+            st.session_state['cookie_saved'] = True
+            st.success("저장 완료! (새로고침 시 초기화될 수 있음)")
 
         st.markdown("---")
         st.header("2. 데이터 업데이트")
         product_ids_input = st.text_area("상품 ID 리스트", height=150)
         
         if st.button("데이터 가져오기"):
-            if 'manual_cookie_str' not in st.session_state:
-                st.error("쿠키를 먼저 설정해주세요.")
+            if not st.session_state.get('cookie_saved') or not st.session_state.get('manual_cookie_str'):
+                st.error("먼저 쿠키를 입력하고 [설정 저장]을 눌러주세요.")
                 st.stop()
 
             active_session = requests.Session()
             active_session.headers.update(HEADERS)
             
-            # [수정됨] 쿠키 문자열 대청소 (줄바꿈/공백 제거 및 인코딩)
             raw_cookie = st.session_state['manual_cookie_str']
-            # 1. 줄바꿈 문자 제거 (핵심 해결책)
             clean_cookie = raw_cookie.replace('\n', '').replace('\r', '')
             
             try:
                 for item in clean_cookie.split(';'):
                     if '=' in item:
                         k, v = item.split('=', 1)
-                        k = k.strip()
-                        v = v.strip()
-                        if v:
+                        if v.strip():
                             try: v.encode('latin-1')
-                            except: v = quote(v)
-                            active_session.cookies.set(k, v)
+                            except: v = quote(v.strip())
+                            active_session.cookies.set(k.strip(), v)
             except Exception as e: 
                 st.warning(f"쿠키 파싱 경고: {e}")
 
@@ -285,7 +294,7 @@ def main():
                 if isinstance(raw_data, str) and (raw_data.startswith('[') or raw_data.startswith('{')):
                     final_df = pd.read_json(raw_data)
                 else:
-                    final_df, _ = process_html_to_dataframe(raw_data)
+                    final_df = pd.DataFrame()
             except: final_df = pd.DataFrame()
 
             if not final_df.empty:
